@@ -83,6 +83,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     private boolean showNulls;
     private boolean rightJustifyNumbers;
     private boolean rightJustifyDateTime;
+    private int tabWidth;
+    private int maxColumnSize;
+    private String spaces;
 
     @Override
     public void createPresentation(@NotNull final IResultSetController controller, @NotNull Composite parent) {
@@ -235,8 +238,12 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         colWidths = null;
 
         DBPPreferenceStore prefs = getController().getPreferenceStore();
+        showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
         rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
         rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
+        tabWidth = prefs.getInt(DBeaverPreferences.RESULT_TEXT_TAB_SIZE);
+        maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
+        spaces = new String(new char[maxColumnSize]).replace('\0', ' ');
 
         if (controller.isRecordMode()) {
             printRecord();
@@ -247,10 +254,8 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     private void printGrid(boolean append) {
         DBPPreferenceStore prefs = getController().getPreferenceStore();
-        int maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
         boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
         boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        this.showNulls = getController().getPreferenceStore().getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
 
         DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
 
@@ -290,9 +295,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 DBDAttributeBinding attr = attrs.get(i);
                 String attrName = getAttributeName(attr);
                 grid.append(attrName);
-                for (int k = colWidths[i] - attrName.length(); k > 0; k--) {
-                    grid.append(" ");
-                }
+                grid.append(spaces.substring(0,colWidths[i] - attrName.length()));
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -333,15 +336,11 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                     (dataKind == DBPDataKind.DATETIME && rightJustifyDateTime))
                 {
                     // Right justify value
-                    for (int j = colWidths[k] - stringWidth; j > 0; j--) {
-                        grid.append(" ");
-                    }
+                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
                     grid.append(displayString);
                 } else {
                     grid.append(displayString);
-                    for (int j = colWidths[k] - stringWidth; j > 0; j--) {
-                        grid.append(" ");
-                    }
+                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
                 }
             }
             if (delimTrailing) grid.append("|");
