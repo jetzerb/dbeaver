@@ -57,6 +57,8 @@ import org.jkiss.dbeaver.ui.controls.StyledTextFindReplaceTarget;
 import org.jkiss.dbeaver.ui.controls.resultset.*;
 import org.jkiss.utils.CommonUtils;
 
+import java.text.DecimalFormatSymbols;
+
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -75,7 +77,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     public boolean activated;
     private Color curLineColor;
 
-    private int[] colWidths;
+    private ColumnInformation[] colInfo;
     private StyleRange curLineRange;
     private int totalRows = 0;
     private String curSelection;
@@ -187,9 +189,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         } else {
             int colNum = 0;
             int horOffsetBegin = 0, horOffsetEnd = 0;
-            for (int i = 0; i < colWidths.length; i++) {
+            for (int i = 0; i < colInfo.length; i++) {
                 horOffsetBegin = horOffsetEnd;
-                horOffsetEnd += colWidths[i] + 1;
+                horOffsetEnd += colInfo[i].length() + 1;
                 if (horizontalOffset < horOffsetEnd) {
                     colNum = i;
                     break;
@@ -235,7 +237,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     @Override
     public void refreshData(boolean refreshMetadata, boolean append, boolean keepState) {
-        colWidths = null;
+        colInfo = null;
 
         DBPPreferenceStore prefs = getController().getPreferenceStore();
         showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
@@ -256,6 +258,8 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         DBPPreferenceStore prefs = getController().getPreferenceStore();
         boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
         boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
+        ColumnInformation lenInfo;
+        char decimalSeparator = DecimalFormatSymbols.getInstance().getDecimalSeparator();
 
         DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
 
@@ -264,38 +268,52 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
 
         List<ResultSetRow> allRows = model.getAllRows();
-        if (colWidths == null) {
+        if (colInfo == null) {
             // Calculate column widths
-            colWidths = new int[attrs.size()];
+            colInfo = new ColumnInformation[attrs.size()];
 
             for (int i = 0; i < attrs.size(); i++) {
                 DBDAttributeBinding attr = attrs.get(i);
-                colWidths[i] = getAttributeName(attr).length();
+                colInfo[i] = new ColumnInformation();
+                colInfo[i].name = getAttributeName(attr);
+                colInfo[i].strLen = colInfo[i].name.length();
+                colInfo[i].useNumLen = (attr.getDataKind() == DBPDataKind.NUMERIC) && rightJustifyNumbers;
+                colInfo[i].rightJustify = colInfo[i].useNumLen || (attr.getDataKind() == DBPDataKind.DATETIME) && rightJustifyDateTime;
                 if (showNulls && !attr.isRequired()) {
-                    colWidths[i] = Math.max(colWidths[i], DBConstants.NULL_VALUE_LABEL.length());
+                    colInfo[i].strLen = Math.max(colInfo[i].strLen, DBConstants.NULL_VALUE_LABEL.length());
                 }
                 for (ResultSetRow row : allRows) {
                     String displayString = getCellString(model, attr, row, displayFormat);
-                    colWidths[i] = Math.max(colWidths[i], getStringWidth(displayString));
+                    lenInfo = getColInfo(displayString,colInfo[i].useNumLen,decimalSeparator);
+                    if (colInfo[i].useNumLen) {
+                        colInfo[i].intLen = Math.max(colInfo[i].intLen, lenInfo.intLen);
+                        colInfo[i].fracLen = Math.max(colInfo[i].fracLen, lenInfo.fracLen);
+                    } else {
+                        colInfo[i].strLen = Math.max(colInfo[i].strLen, lenInfo.strLen);
+                    }
                 }
-            }
-            for (int i = 0; i < colWidths.length; i++) {
-                //colWidths[i]++;
-                if (colWidths[i] > maxColumnSize) {
-                    colWidths[i] = maxColumnSize;
+
+                colInfo[i].name = CommonUtils.truncateString(colInfo[i].name,maxColumnSize);
+                colInfo[i].strLen = Math.min(colInfo[i].strLen,maxColumnSize);
+                if (colInfo[i].useNumLen) {
+                    int diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                    colInfo[i].fracLen -= Math.min(diff,colInfo[i].fracLen);
+                    diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                    colInfo[i].intLen -= diff;
                 }
             }
         }
 
+        DBPDataKind dataKind;
         if (!append) {
             // Print header
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                DBDAttributeBinding attr = attrs.get(i);
-                String attrName = getAttributeName(attr);
-                grid.append(attrName);
-                grid.append(spaces.substring(0,colWidths[i] - attrName.length()));
+                String pad = spaces.substring(0,colInfo[i].length() - colInfo[i].name.length());
+                if (colInfo[i].rightJustify) grid.append(pad);
+                grid.append(colInfo[i].name);
+                if (!colInfo[i].rightJustify) grid.append(pad);
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -305,7 +323,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                for (int k = colWidths[i]; k > 0; k--) {
+                for (int k = colInfo[i].length(); k > 0; k--) {
                     grid.append("-");
                 }
             }
@@ -320,27 +338,31 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         }
         for (int i = firstRow; i < allRows.size(); i++) {
             ResultSetRow row = allRows.get(i);
+            System.out.println(String.format("Row %1$d",i)); // ****
             if (delimLeading) grid.append("|");
             for (int k = 0; k < attrs.size(); k++) {
                 if (k > 0) grid.append("|");
                 DBDAttributeBinding attr = attrs.get(k);
                 String displayString = getCellString(model, attr, row, displayFormat);
-                if (displayString.length() >= colWidths[k]) {
-                    displayString = CommonUtils.truncateString(displayString, colWidths[k]);
+                if (displayString.length() >= colInfo[k].length()) {
+                    displayString = CommonUtils.truncateString(displayString, colInfo[k].length());
                 }
 
-                int stringWidth = getStringWidth(displayString);
+                ColumnInformation strInfo = getColInfo(displayString, colInfo[k].useNumLen, decimalSeparator);
+                System.out.println(String.format("    %1$15s: %s",colInfo[k].name,displayString)); // ****
 
-                DBPDataKind dataKind = attr.getDataKind();
-                if ((dataKind == DBPDataKind.NUMERIC && rightJustifyNumbers) ||
-                    (dataKind == DBPDataKind.DATETIME && rightJustifyDateTime))
+                if (colInfo[k].useNumLen)
                 {
-                    // Right justify value
-                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
+                    int len = colInfo[k].intLen - strInfo.intLen + colInfo[k].numLeftPad();
+                    grid.append(spaces.substring(0,len));
                     grid.append(displayString);
+                    len += displayString.length();
+                    grid.append(spaces.substring(0,colInfo[k].length() - len));
+                } else if (colInfo[k].rightJustify) {
+                    grid.append(spaces.substring(0,colInfo[k].length() - strInfo.length()));
                 } else {
                     grid.append(displayString);
-                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
+                    grid.append(spaces.substring(0,colInfo[k].length() - strInfo.length()));
                 }
             }
             if (delimTrailing) grid.append("|");
@@ -355,6 +377,48 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         }
 
         totalRows = allRows.size();
+    }
+
+    private class ColumnInformation {
+
+        public boolean useNumLen;
+        public String name;
+        public boolean rightJustify;
+        public int strLen;
+        public int intLen;
+        public int fracLen;
+
+        public int numLen() {
+            return intLen + (fracLen > 0 ? fracLen + 1 : 0); // add dec separator if fracLen > 0
+        }
+
+        public int length() {
+            return useNumLen ? Math.max(numLen(), strLen) : strLen;
+        }
+
+        public int numLeftPad() {
+                return Math.max(0, strLen - numLen());
+        }
+    }
+
+    private ColumnInformation getColInfo(String str, boolean useNumLen, char decimalSeparator) {
+        ColumnInformation col = new ColumnInformation();
+        if (str == null) { str = ""; }
+        col.strLen = str.length();
+        if (useNumLen) {
+            col.intLen = str.indexOf(decimalSeparator);
+            if (col.intLen < 0) {
+                col.intLen = col.strLen;
+                col.fracLen = 0;
+            } else {
+                col.fracLen = col.strLen - col.intLen - 1;
+            }
+        } else {
+            for (int pos = str.indexOf('\t'); pos >= 0; pos = str.indexOf('\t',pos+1)) {
+                col.strLen += tabWidth - 1;
+            }
+        }
+        return col;
     }
 
     private int getStringWidth(String str) {
@@ -472,7 +536,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     @Override
     public void clearMetaData() {
-        colWidths = null;
+        colInfo = null;
         curLineRange = null;
         totalRows = 0;
     }
@@ -699,5 +763,4 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             return getController().getCurrentRow();
         }
     }
-
 }
