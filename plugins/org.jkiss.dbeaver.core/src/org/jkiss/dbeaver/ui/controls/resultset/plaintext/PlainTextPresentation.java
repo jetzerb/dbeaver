@@ -245,7 +245,32 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
         tabWidth = prefs.getInt(DBeaverPreferences.RESULT_TEXT_TAB_SIZE);
         maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
+        boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
+        boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
         spaces = new String(new char[maxColumnSize]).replace('\0', ' ');
+        DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
+        char decimalSeparator = DecimalFormatSymbols.getInstance().getDecimalSeparator();
+        ColumnInformation lenInfo;
+        List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
+        StringBuilder grid = new StringBuilder(512);
+        ResultSetModel model = controller.getModel();
+
+        if (colInfo == null) {
+            // Calculate column attributes
+            colInfo = new ColumnInformation[attrs.size()];
+
+            for (int i = 0; i < attrs.size(); i++) {
+                DBDAttributeBinding attr = attrs.get(i);
+                colInfo[i] = new ColumnInformation();
+                colInfo[i].name = getAttributeName(attr);
+                colInfo[i].strLen = colInfo[i].name.length();
+                colInfo[i].useNumLen = (attr.getDataKind() == DBPDataKind.NUMERIC) && rightJustifyNumbers;
+                colInfo[i].rightJustify = colInfo[i].useNumLen || (attr.getDataKind() == DBPDataKind.DATETIME) && rightJustifyDateTime;
+                if (showNulls && !attr.isRequired()) {
+                    colInfo[i].strLen = Math.max(colInfo[i].strLen, DBConstants.NULL_VALUE_LABEL.length());
+                }
+            }
+        }
 
         if (controller.isRecordMode()) {
             printRecord();
@@ -255,21 +280,10 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void printGrid(boolean append) {
-        DBPPreferenceStore prefs = getController().getPreferenceStore();
-        boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
-        boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        ColumnInformation lenInfo;
-        char decimalSeparator = DecimalFormatSymbols.getInstance().getDecimalSeparator();
-
-        DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
-
-        StringBuilder grid = new StringBuilder(512);
-        ResultSetModel model = controller.getModel();
-        List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
 
         List<ResultSetRow> allRows = model.getAllRows();
         if (colInfo == null) {
-            // Calculate column widths
+            // Calculate column value widths
             colInfo = new ColumnInformation[attrs.size()];
 
             for (int i = 0; i < attrs.size(); i++) {
@@ -338,7 +352,6 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         }
         for (int i = firstRow; i < allRows.size(); i++) {
             ResultSetRow row = allRows.get(i);
-            System.out.println(String.format("Row %1$d",i)); // ****
             if (delimLeading) grid.append("|");
             for (int k = 0; k < attrs.size(); k++) {
                 if (k > 0) grid.append("|");
@@ -349,7 +362,6 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 }
 
                 ColumnInformation strInfo = getColInfo(displayString, colInfo[k].useNumLen, decimalSeparator);
-                System.out.println(String.format("    %1$15s: %s",colInfo[k].name,displayString)); // ****
 
                 if (colInfo[k].useNumLen)
                 {
@@ -464,24 +476,22 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void printRecord() {
-        DBPPreferenceStore prefs = getController().getPreferenceStore();
-        boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
-        boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
-
-        StringBuilder grid = new StringBuilder(512);
-        ResultSetModel model = controller.getModel();
         List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
         String[] values = new String[attrs.size()];
+        ColumnInformation lenInfo;
         ResultSetRow currentRow = controller.getCurrentRow();
 
         // Calculate column widths
         int nameWidth = 4, valueWidth = 5;
         for (int i = 0; i < attrs.size(); i++) {
             DBDAttributeBinding attr = attrs.get(i);
-            nameWidth = Math.max(nameWidth, getAttributeName(attr).length());
+            nameWidth = Math.max(nameWidth, colInfo[i].name.length());
             if (currentRow != null) {
                 String displayString = getCellString(model, attr, currentRow, displayFormat);
+                lenInfo = getColInfo(displayString, colInfo[i].useNumLen, decimalSeparator);
+                if (colInfo[i].useNumLen) {
+                    displayString = spaces.substring(0,colInfo[i].intLen - lenInfo.intLen) + displayString;
+                }
                 values[i] = displayString;
                 valueWidth = Math.max(valueWidth, values[i].length());
             }
@@ -490,13 +500,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         // Header
         if (delimLeading) grid.append("|");
         grid.append("Name");
-        for (int j = nameWidth - 4; j > 0; j--) {
-            grid.append(" ");
-        }
+        grid.append(spaces.substring(0, nameWidth-4));
         grid.append("|Value");
-        for (int j = valueWidth - 5; j > 0; j--) {
-            grid.append(" ");
-        }
+        grid.append(spaces.substring(0, valueWidth-5));
         if (delimTrailing) grid.append("|");
         grid.append("\n");
         for (int j = 0; j < nameWidth; j++) grid.append("-");
@@ -512,14 +518,10 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 String name = getAttributeName(attr);
                 if (delimLeading) grid.append("|");
                 grid.append(name);
-                for (int j = nameWidth - name.length(); j > 0; j--) {
-                    grid.append(" ");
-                }
+                grid.append(spaces.substring(0, nameWidth-name.length()));
                 grid.append("|");
                 grid.append(values[i]);
-                for (int j = valueWidth - values[i].length(); j > 0; j--) {
-                    grid.append(" ");
-                }
+                grid.append(spaces.substring(0, valueWidth - values[i].length()));
 
                 if (delimTrailing) grid.append("|");
                 grid.append("\n");
