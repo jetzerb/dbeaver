@@ -75,14 +75,20 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     public boolean activated;
     private Color curLineColor;
 
+    private DBPPreferenceStore prefs;
+    private boolean rightJustifyNumbers;
+    private boolean rightJustifyDateTime;
+    private boolean delimLeading;
+    private boolean delimTrailing;
+    private boolean showNulls;
+    private DBDDisplayFormat displayFormat;
+    private ResultSetModel model;
+    private List<DBDAttributeBinding> attrs;
     private int[] colWidths;
     private StyleRange curLineRange;
     private int totalRows = 0;
     private String curSelection;
     private Font monoFont;
-    private boolean showNulls;
-    private boolean rightJustifyNumbers;
-    private boolean rightJustifyDateTime;
 
     @Override
     public void createPresentation(@NotNull final IResultSetController controller, @NotNull Composite parent) {
@@ -233,10 +239,15 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     @Override
     public void refreshData(boolean refreshMetadata, boolean append, boolean keepState) {
         colWidths = null;
-
-        DBPPreferenceStore prefs = getController().getPreferenceStore();
+        prefs = getController().getPreferenceStore();
         rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
         rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
+        delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
+        delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
+        showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
+        displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
+        model = controller.getModel();
+        attrs = model.getVisibleAttributes();
 
         if (controller.isRecordMode()) {
             printRecord();
@@ -246,19 +257,10 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void printGrid(boolean append) {
-        DBPPreferenceStore prefs = getController().getPreferenceStore();
         int maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
-        boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
-        boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        this.showNulls = getController().getPreferenceStore().getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
-
-        DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
-
         StringBuilder grid = new StringBuilder(512);
-        ResultSetModel model = controller.getModel();
-        List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
-
         List<ResultSetRow> allRows = model.getAllRows();
+
         if (colWidths == null) {
             // Calculate column widths
             colWidths = new int[attrs.size()];
@@ -401,14 +403,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void printRecord() {
-        DBPPreferenceStore prefs = getController().getPreferenceStore();
-        boolean delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
-        boolean delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        DBDDisplayFormat displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
-
         StringBuilder grid = new StringBuilder(512);
-        ResultSetModel model = controller.getModel();
-        List<DBDAttributeBinding> attrs = model.getVisibleAttributes();
         String[] values = new String[attrs.size()];
         ResultSetRow currentRow = controller.getCurrentRow();
 
