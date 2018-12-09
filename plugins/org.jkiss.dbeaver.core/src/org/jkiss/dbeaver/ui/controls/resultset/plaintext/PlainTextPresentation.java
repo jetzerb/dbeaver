@@ -81,6 +81,8 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     private boolean delimLeading;
     private boolean delimTrailing;
     private boolean showNulls;
+    private int maxColumnSize;
+    private String spaces;
     private DBDDisplayFormat displayFormat;
     private ResultSetModel model;
     private List<DBDAttributeBinding> attrs;
@@ -238,16 +240,20 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     @Override
     public void refreshData(boolean refreshMetadata, boolean append, boolean keepState) {
-        colWidths = null;
-        prefs = getController().getPreferenceStore();
-        rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
-        rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
-        delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
-        delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
-        showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
-        displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
-        model = controller.getModel();
-        attrs = model.getVisibleAttributes();
+        if (prefs == null || refreshMetadata) {
+            colWidths = null;
+            prefs = getController().getPreferenceStore();
+            rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
+            rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
+            delimLeading = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_LEADING);
+            delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
+            showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
+            displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
+            maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
+            spaces = new String(new char[maxColumnSize]).replace('\0', ' ');
+            model = controller.getModel();
+            attrs = model.getVisibleAttributes();
+        }
 
         if (controller.isRecordMode()) {
             printRecord();
@@ -292,9 +298,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 DBDAttributeBinding attr = attrs.get(i);
                 String attrName = getAttributeName(attr);
                 grid.append(attrName);
-                for (int k = colWidths[i] - attrName.length(); k > 0; k--) {
-                    grid.append(" ");
-                }
+                grid.append(spaces.substring(0,colWidths[i] - attrName.length()));
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -304,9 +308,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                for (int k = colWidths[i]; k > 0; k--) {
-                    grid.append("-");
-                }
+                for (int k = colWidths[i]; k > 0; k--) grid.append("-");
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -335,15 +337,11 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                     (dataKind == DBPDataKind.DATETIME && rightJustifyDateTime))
                 {
                     // Right justify value
-                    for (int j = colWidths[k] - stringWidth; j > 0; j--) {
-                        grid.append(" ");
-                    }
+                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
                     grid.append(displayString);
                 } else {
                     grid.append(displayString);
-                    for (int j = colWidths[k] - stringWidth; j > 0; j--) {
-                        grid.append(" ");
-                    }
+                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
                 }
             }
             if (delimTrailing) grid.append("|");
@@ -422,13 +420,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         // Header
         if (delimLeading) grid.append("|");
         grid.append("Name");
-        for (int j = nameWidth - 4; j > 0; j--) {
-            grid.append(" ");
-        }
+        grid.append(spaces.substring(0,nameWidth-4));
         grid.append("|Value");
-        for (int j = valueWidth - 5; j > 0; j--) {
-            grid.append(" ");
-        }
+        grid.append(spaces.substring(0,valueWidth-5));
         if (delimTrailing) grid.append("|");
         grid.append("\n");
         if (delimLeading) grid.append("|");
@@ -445,15 +439,10 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 String name = getAttributeName(attr);
                 if (delimLeading) grid.append("|");
                 grid.append(name);
-                for (int j = nameWidth - name.length(); j > 0; j--) {
-                    grid.append(" ");
-                }
+                grid.append(spaces.substring(0,nameWidth - name.length()));
                 grid.append("|");
                 grid.append(values[i]);
-                for (int j = valueWidth - values[i].length(); j > 0; j--) {
-                    grid.append(" ");
-                }
-
+                grid.append(spaces.substring(0,valueWidth - values[i].length()));
                 if (delimTrailing) grid.append("|");
                 grid.append("\n");
             }
