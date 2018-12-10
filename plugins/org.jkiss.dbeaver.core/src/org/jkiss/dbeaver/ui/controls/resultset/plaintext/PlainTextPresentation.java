@@ -57,6 +57,8 @@ import org.jkiss.dbeaver.ui.controls.StyledTextFindReplaceTarget;
 import org.jkiss.dbeaver.ui.controls.resultset.*;
 import org.jkiss.utils.CommonUtils;
 
+import java.text.DecimalFormatSymbols;
+
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -81,13 +83,14 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     private boolean delimLeading;
     private boolean delimTrailing;
     private boolean showNulls;
+    private int tabWidth;
     private int maxColumnSize;
     private String spaces;
     private DBDDisplayFormat displayFormat;
     private StringBuilder grid;
     private ResultSetModel model;
     private List<DBDAttributeBinding> attrs;
-    private int[] colWidths;
+    private ColumnInformation[] colInfo;
     private StyleRange curLineRange;
     private int totalRows = 0;
     private String curSelection;
@@ -174,7 +177,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void onCursorChange(int offset) {
-        ResultSetModel model = controller.getModel();
+        model = controller.getModel();
 
         int lineNum = text.getLineAtOffset(offset);
         int lineOffset = text.getOffsetAtLine(lineNum);
@@ -193,9 +196,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         } else {
             int colNum = 0;
             int horOffsetBegin = 0, horOffsetEnd = 0;
-            for (int i = 0; i < colWidths.length; i++) {
+            for (int i = 0; i < colInfo.length; i++) {
                 horOffsetBegin = horOffsetEnd;
-                horOffsetEnd += colWidths[i] + 1;
+                horOffsetEnd += colInfo[i].length() + 1;
                 if (horizontalOffset < horOffsetEnd) {
                     colNum = i;
                     break;
@@ -242,7 +245,6 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     @Override
     public void refreshData(boolean refreshMetadata, boolean append, boolean keepState) {
         if (prefs == null || refreshMetadata) {
-            colWidths = null;
             prefs = getController().getPreferenceStore();
             rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
             rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
@@ -250,11 +252,26 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             delimTrailing = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_DELIMITER_TRAILING);
             showNulls = prefs.getBoolean(DBeaverPreferences.RESULT_TEXT_SHOW_NULLS);
             displayFormat = DBDDisplayFormat.safeValueOf(prefs.getString(DBeaverPreferences.RESULT_TEXT_VALUE_FORMAT));
+            tabWidth = prefs.getInt(DBeaverPreferences.RESULT_TEXT_TAB_SIZE);
             maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
             spaces = new String(new char[maxColumnSize]).replace('\0', ' ');
             grid = new StringBuilder(512);
             model = controller.getModel();
             attrs = model.getVisibleAttributes();
+
+            // Calculate column attributes
+            colInfo = new ColumnInformation[attrs.size()];
+            for (int i = 0; i < attrs.size(); i++) {
+                DBDAttributeBinding attr = attrs.get(i);
+                colInfo[i] = new ColumnInformation();
+                colInfo[i].name = getAttributeName(attr);
+                colInfo[i].strLen = colInfo[i].name.length();
+                colInfo[i].useNumLen = (attr.getDataKind() == DBPDataKind.NUMERIC) && rightJustifyNumbers;
+                colInfo[i].rightJustify = colInfo[i].useNumLen || (attr.getDataKind() == DBPDataKind.DATETIME) && rightJustifyDateTime;
+                if (showNulls && !attr.isRequired()) {
+                    colInfo[i].strLen = Math.max(colInfo[i].strLen, DBConstants.NULL_VALUE_LABEL.length());
+                }
+            }
         }
 
         if (controller.isRecordMode()) {
@@ -266,26 +283,32 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     private void printGrid(boolean append) {
         List<ResultSetRow> allRows = model.getAllRows();
+        ColumnInformation lenInfo;
 
-        if (colWidths == null) {
-            // Calculate column widths
-            colWidths = new int[attrs.size()];
-
-            for (int i = 0; i < attrs.size(); i++) {
-                DBDAttributeBinding attr = attrs.get(i);
-                colWidths[i] = getAttributeName(attr).length();
-                if (showNulls && !attr.isRequired()) {
-                    colWidths[i] = Math.max(colWidths[i], DBConstants.NULL_VALUE_LABEL.length());
-                }
-                for (ResultSetRow row : allRows) {
+        // make initial pass through the data to determine column widths,
+        // and print headers
+        if (!append) {
+            for (ResultSetRow row : allRows) {
+                for (int i = 0; i < attrs.size(); i++) {
+                    DBDAttributeBinding attr = attrs.get(i);
                     String displayString = getCellString(model, attr, row, displayFormat);
-                    colWidths[i] = Math.max(colWidths[i], getStringWidth(displayString));
+                    lenInfo = getColInfo(displayString,colInfo[i].useNumLen,decimalSeparator);
+                    if (colInfo[i].useNumLen) {
+                        colInfo[i].intLen = Math.max(colInfo[i].intLen, lenInfo.intLen);
+                        colInfo[i].fracLen = Math.max(colInfo[i].fracLen, lenInfo.fracLen);
+                    } else {
+                        colInfo[i].strLen = Math.max(colInfo[i].strLen, lenInfo.strLen);
+                    }
                 }
             }
-            for (int i = 0; i < colWidths.length; i++) {
-                //colWidths[i]++;
-                if (colWidths[i] > maxColumnSize) {
-                    colWidths[i] = maxColumnSize;
+            for (int i = 0; i < attrs.size(); i++) {
+                colInfo[i].name = CommonUtils.truncateString(colInfo[i].name,maxColumnSize);
+                colInfo[i].strLen = Math.min(colInfo[i].strLen,maxColumnSize);
+                if (colInfo[i].useNumLen) {
+                    int diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                    colInfo[i].fracLen -= Math.min(diff,colInfo[i].fracLen);
+                    diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                    colInfo[i].intLen -= diff;
                 }
             }
         }
@@ -295,10 +318,10 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                DBDAttributeBinding attr = attrs.get(i);
-                String attrName = getAttributeName(attr);
-                grid.append(attrName);
-                grid.append(spaces.substring(0,colWidths[i] - attrName.length()));
+                String pad = spaces.substring(0,colInfo[i].length() - colInfo[i].name.length());
+                if (colInfo[i].rightJustify) grid.append(pad);
+                grid.append(colInfo[i].name);
+                if (!colInfo[i].rightJustify) grid.append(pad);
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -308,7 +331,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                for (int k = colWidths[i]; k > 0; k--) grid.append("-");
+                for (int k = colInfo[i].length(); k > 0; k--) grid.append("-");
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
@@ -326,22 +349,24 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                 if (k > 0) grid.append("|");
                 DBDAttributeBinding attr = attrs.get(k);
                 String displayString = getCellString(model, attr, row, displayFormat);
-                if (displayString.length() >= colWidths[k]) {
-                    displayString = CommonUtils.truncateString(displayString, colWidths[k]);
+                if (displayString.length() >= colInfo[k].length()) {
+                    displayString = CommonUtils.truncateString(displayString, colInfo[k].length());
                 }
 
-                int stringWidth = getStringWidth(displayString);
+                lenInfo = getColInfo(displayString, colInfo[k].useNumLen, decimalSeparator);
 
-                DBPDataKind dataKind = attr.getDataKind();
-                if ((dataKind == DBPDataKind.NUMERIC && rightJustifyNumbers) ||
-                    (dataKind == DBPDataKind.DATETIME && rightJustifyDateTime))
+                if (colInfo[k].useNumLen)
                 {
-                    // Right justify value
-                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
+                    int len = colInfo[k].intLen - lenInfo.intLen + colInfo[k].numLeftPad();
+                    grid.append(spaces.substring(0,len));
                     grid.append(displayString);
+                    len += displayString.length();
+                    grid.append(spaces.substring(0,colInfo[k].length() - len));
                 } else {
+                    String pad = spaces.substring(0,colInfo[k].length() - strInfo.length());
+                    if (colInfo[k].rightJustify) grid.append(pad);
                     grid.append(displayString);
-                    grid.append(spaces.substring(0,colWidths[k] - stringWidth));
+                    if (!colInfo[k].rightJustify) grid.append(pad);
                 }
             }
             if (delimTrailing) grid.append("|");
@@ -358,19 +383,46 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         totalRows = allRows.size();
     }
 
-    private int getStringWidth(String str) {
-        int width = 0;
-        if (str != null && str.length() > 0) {
-            for (int i = 0; i < str.length(); i++) {
-                char c = str.charAt(i);
-                if (c == '\t') {
-                    width += controller.getPreferenceStore().getInt(DBeaverPreferences.RESULT_TEXT_TAB_SIZE);
-                } else {
-                    width++;
-                }
+    private class ColumnInformation {
+
+        public String name;
+        public boolean useNumLen;
+        public boolean rightJustify;
+        public int strLen;
+        public int intLen;
+        public int fracLen;
+
+        public int numLen() {
+            return intLen + (fracLen > 0 ? fracLen + 1 : 0); // add dec separator if fracLen > 0
+        }
+
+        public int length() {
+            return useNumLen ? Math.max(numLen(), strLen) : strLen;
+        }
+
+        public int numLeftPad() {
+                return Math.max(0, strLen - numLen());
+        }
+    }
+
+    private ColumnInformation getColInfo(String str, boolean useNumLen, char decimalSeparator) {
+        ColumnInformation col = new ColumnInformation();
+        if (str == null) { str = ""; }
+        col.strLen = str.length();
+        if (useNumLen) {
+            col.intLen = str.indexOf(decimalSeparator);
+            if (col.intLen < 0) {
+                col.intLen = col.strLen;
+                col.fracLen = 0;
+            } else {
+                col.fracLen = col.strLen - col.intLen - 1;
+            }
+        } else {
+            for (int pos = str.indexOf('\t'); pos >= 0; pos = str.indexOf('\t',pos+1)) {
+                col.strLen += tabWidth - 1;
             }
         }
-        return width;
+        return col;
     }
 
     private static String getAttributeName(DBDAttributeBinding attr) {
@@ -457,7 +509,7 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     @Override
     public void clearMetaData() {
-        colWidths = null;
+        colInfo = null;
         curLineRange = null;
         totalRows = 0;
     }
