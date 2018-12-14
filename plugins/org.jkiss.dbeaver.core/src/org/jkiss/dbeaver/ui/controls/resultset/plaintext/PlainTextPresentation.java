@@ -57,8 +57,6 @@ import org.jkiss.dbeaver.ui.controls.StyledTextFindReplaceTarget;
 import org.jkiss.dbeaver.ui.controls.resultset.*;
 import org.jkiss.utils.CommonUtils;
 
-import java.text.DecimalFormatSymbols;
-
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -83,11 +81,11 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     private boolean delimLeading;
     private boolean delimTrailing;
     private boolean showNulls;
+    private char decimalSeparator;
     private int tabWidth;
     private int maxColumnSize;
     private String spaces;
     private DBDDisplayFormat displayFormat;
-    private StringBuilder grid;
     private ResultSetModel model;
     private List<DBDAttributeBinding> attrs;
     private ColumnInformation[] colInfo;
@@ -245,6 +243,9 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     @Override
     public void refreshData(boolean refreshMetadata, boolean append, boolean keepState) {
         if (prefs == null || refreshMetadata) {
+            System.out.println("Refreshing Metadata"); // ****
+            System.out.println(prefs == null ? "    prefs == null" : ""); // ****
+            System.out.println(refreshMetadata ? "    told to refresh meta data" : ""); // ****
             prefs = getController().getPreferenceStore();
             rightJustifyNumbers = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_NUMBERS);
             rightJustifyDateTime = prefs.getBoolean(DBeaverPreferences.RESULT_SET_RIGHT_JUSTIFY_DATETIME);
@@ -255,72 +256,78 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             tabWidth = prefs.getInt(DBeaverPreferences.RESULT_TEXT_TAB_SIZE);
             maxColumnSize = prefs.getInt(DBeaverPreferences.RESULT_TEXT_MAX_COLUMN_SIZE);
             spaces = new String(new char[maxColumnSize]).replace('\0', ' ');
-            grid = new StringBuilder(512);
             model = controller.getModel();
             attrs = model.getVisibleAttributes();
 
             // Calculate column attributes
             colInfo = new ColumnInformation[attrs.size()];
+            decimalSeparator = '\0';
             for (int i = 0; i < attrs.size(); i++) {
                 DBDAttributeBinding attr = attrs.get(i);
-                colInfo[i] = new ColumnInformation();
-                colInfo[i].name = getAttributeName(attr);
-                colInfo[i].strLen = colInfo[i].name.length();
-                colInfo[i].useNumLen = (attr.getDataKind() == DBPDataKind.NUMERIC) && rightJustifyNumbers;
-                colInfo[i].rightJustify = colInfo[i].useNumLen || (attr.getDataKind() == DBPDataKind.DATETIME) && rightJustifyDateTime;
-                if (showNulls && !attr.isRequired()) {
-                    colInfo[i].strLen = Math.max(colInfo[i].strLen, DBConstants.NULL_VALUE_LABEL.length());
+                if (decimalSeparator == '\0' && attr.getDataKind() == DBPDataKind.NUMERIC) {
+                    String val = attr.getValueHandler().getValueDisplayString(attr, 1.1, displayFormat);
+                    decimalSeparator = val.indexOf('.') >= 0 ? '.' : ',';
                 }
+                colInfo[i] = new ColumnInformation(getAttributeName(attr), attr.getDataKind(), true);
+                if (showNulls && !attr.isRequired())
+                    colInfo[i].strWidth = Math.max(colInfo[i].strWidth, DBConstants.NULL_VALUE_LABEL.length());
             }
         }
 
-        if (controller.isRecordMode()) {
+        if (controller.isRecordMode())
             printRecord();
-        } else {
+        else
             printGrid(append);
-        }
     }
 
     private void printGrid(boolean append) {
         List<ResultSetRow> allRows = model.getAllRows();
         ColumnInformation lenInfo;
+        int firstRow = append ? totalRows - 1 : 0;
+        StringBuilder grid = new StringBuilder(512);
+        int oldWidth[] = new int[colInfo.length];
+        boolean reHdr = false;
 
-        // make initial pass through the data to determine column widths,
-        // and print headers
-        if (!append) {
-            for (ResultSetRow row : allRows) {
-                for (int i = 0; i < attrs.size(); i++) {
-                    DBDAttributeBinding attr = attrs.get(i);
-                    String displayString = getCellString(model, attr, row, displayFormat);
-                    lenInfo = getColInfo(displayString,colInfo[i].useNumLen,decimalSeparator);
-                    if (colInfo[i].useNumLen) {
-                        colInfo[i].intLen = Math.max(colInfo[i].intLen, lenInfo.intLen);
-                        colInfo[i].fracLen = Math.max(colInfo[i].fracLen, lenInfo.fracLen);
-                    } else {
-                        colInfo[i].strLen = Math.max(colInfo[i].strLen, lenInfo.strLen);
-                    }
-                }
-            }
-            for (int i = 0; i < attrs.size(); i++) {
-                colInfo[i].name = CommonUtils.truncateString(colInfo[i].name,maxColumnSize);
-                colInfo[i].strLen = Math.min(colInfo[i].strLen,maxColumnSize);
-                if (colInfo[i].useNumLen) {
-                    int diff = Math.max(0,colInfo[i].length() - maxColumnSize);
-                    colInfo[i].fracLen -= Math.min(diff,colInfo[i].fracLen);
-                    diff = Math.max(0,colInfo[i].length() - maxColumnSize);
-                    colInfo[i].intLen -= diff;
+        // adjust column widths based on current chunk of records to display
+        // Save current column widths so we know whether to print the header info for this block
+        for (int i = 0; i < colInfo.length; i++) oldWidth[i] = colInfo[i].length();
+        System.out.println(String.format("%d total rows",allRows.size())); System.out.flush(); //****
+        for (int i = firstRow; i < allRows.size(); i++) {
+            ResultSetRow row = allRows.get(i);
+            for (int k = 0; k < attrs.size(); k++) {
+                DBDAttributeBinding attr = attrs.get(k);
+                String displayString = getCellString(model, attr, row, displayFormat);
+                lenInfo = new ColumnInformation(displayString, colInfo[k].decimalAlign);
+                if (colInfo[k].decimalAlign) {
+                    colInfo[k].intWidth = Math.max(colInfo[k].intWidth, lenInfo.intWidth);
+                    colInfo[k].fracWidth = Math.max(colInfo[k].fracWidth, lenInfo.fracWidth);
+                } else {
+                    colInfo[k].strWidth = Math.max(colInfo[k].strWidth, lenInfo.strWidth);
                 }
             }
         }
+        // enforce maximum column size
+        for (int i = 0; i < attrs.size(); i++) {
+            colInfo[i].value = CommonUtils.truncateString(colInfo[i].value,maxColumnSize); // value = column name
+            colInfo[i].strWidth = Math.min(colInfo[i].strWidth,maxColumnSize);
+            if (colInfo[i].decimalAlign) {
+                int diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                colInfo[i].fracWidth -= Math.min(diff,colInfo[i].fracWidth);
+                diff = Math.max(0,colInfo[i].length() - maxColumnSize);
+                colInfo[i].intWidth -= diff;
+            }
+            reHdr |= colInfo[i].length() != oldWidth[i];
+        }
 
-        if (!append) {
+        if (!append || reHdr) {
+            System.out.println("PrintGrid(): Printing Header"); System.out.flush(); // ****
             // Print header
             if (delimLeading) grid.append("|");
             for (int i = 0; i < attrs.size(); i++) {
                 if (i > 0) grid.append("|");
-                String pad = spaces.substring(0,colInfo[i].length() - colInfo[i].name.length());
+                String pad = spaces.substring(0,colInfo[i].length() - colInfo[i].value.length());
                 if (colInfo[i].rightJustify) grid.append(pad);
-                grid.append(colInfo[i].name);
+                grid.append(colInfo[i].value);
                 if (!colInfo[i].rightJustify) grid.append(pad);
             }
             if (delimTrailing) grid.append("|");
@@ -338,14 +345,13 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         }
 
         // Print rows
-        int firstRow = append ? totalRows : 0;
-        if (append) {
-            grid.append("\n");
-        }
+        System.out.println(String.format("Printing rows %d through %d",firstRow,allRows.size())); System.out.flush(); // ****
         for (int i = firstRow; i < allRows.size(); i++) {
+            System.out.print(String.format("Row %4d",i)); System.out.flush(); // ****
             ResultSetRow row = allRows.get(i);
             if (delimLeading) grid.append("|");
             for (int k = 0; k < attrs.size(); k++) {
+                System.out.print(String.format("...%d",k)); System.out.flush(); // ****
                 if (k > 0) grid.append("|");
                 DBDAttributeBinding attr = attrs.get(k);
                 String displayString = getCellString(model, attr, row, displayFormat);
@@ -353,17 +359,17 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
                     displayString = CommonUtils.truncateString(displayString, colInfo[k].length());
                 }
 
-                lenInfo = getColInfo(displayString, colInfo[k].useNumLen, decimalSeparator);
+                lenInfo = new ColumnInformation(displayString, colInfo[k].decimalAlign);
 
-                if (colInfo[k].useNumLen)
+                if (colInfo[k].decimalAlign)
                 {
-                    int len = colInfo[k].intLen - lenInfo.intLen + colInfo[k].numLeftPad();
+                    int len = colInfo[k].numLeftPad() + colInfo[k].intWidth - lenInfo.intWidth;
                     grid.append(spaces.substring(0,len));
                     grid.append(displayString);
                     len += displayString.length();
                     grid.append(spaces.substring(0,colInfo[k].length() - len));
                 } else {
-                    String pad = spaces.substring(0,colInfo[k].length() - strInfo.length());
+                    String pad = spaces.substring(0,colInfo[k].length() - lenInfo.length());
                     if (colInfo[k].rightJustify) grid.append(pad);
                     grid.append(displayString);
                     if (!colInfo[k].rightJustify) grid.append(pad);
@@ -371,10 +377,12 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
             }
             if (delimTrailing) grid.append("|");
             grid.append("\n");
+            System.out.println(""); System.out.flush();
         }
         grid.setLength(grid.length() - 1); // cut last line feed
 
         if (append) {
+            text.append("\n");
             text.append(grid.toString());
         } else {
             text.setText(grid.toString());
@@ -385,44 +393,65 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
 
     private class ColumnInformation {
 
-        public String name;
-        public boolean useNumLen;
+        public String value;
+        public boolean decimalAlign;
         public boolean rightJustify;
-        public int strLen;
-        public int intLen;
-        public int fracLen;
+        public int strWidth;
+        public int intWidth;
+        public int fracWidth;
 
+        // constructor with smarts
+        public ColumnInformation(String value, DBPDataKind dataKind, boolean isHeader) {
+            setValue(value);
+            decimalAlign = (dataKind == DBPDataKind.NUMERIC) && rightJustifyNumbers;
+            rightJustify = decimalAlign || (dataKind == DBPDataKind.DATETIME) && rightJustifyDateTime;
+            if (decimalAlign && !isHeader) setNumInfo();
+            else expandTabs();
+        }
+
+        // streamlined constructor for known data types
+        public ColumnInformation(String value, boolean decimalAlign) {
+            setValue(value);
+            if (decimalAlign) {
+                this.decimalAlign = true;
+                this.rightJustify = true;
+                setNumInfo();
+            }
+            else expandTabs(); // assume numbers don't contain tabs
+        }
+
+        // Constructor helpers
+        private void setValue(String value) {
+            this.value = value == null ? "" : value;
+            strWidth = this.value.length();
+        }
+        private void expandTabs() {
+            for (int pos = value.indexOf('\t'); pos >= 0; pos = value.indexOf('\t',pos+1))
+                strWidth += tabWidth - 1;
+        }
+        private void setNumInfo() {
+            intWidth = value.indexOf(decimalSeparator);
+            if (intWidth < 0) {
+                intWidth = strWidth;
+                fracWidth = 0;
+            } else
+                fracWidth = strWidth - intWidth - 1;
+        }
+
+
+        // Consumer helpers
         public int numLen() {
-            return intLen + (fracLen > 0 ? fracLen + 1 : 0); // add dec separator if fracLen > 0
+            return intWidth + (fracWidth > 0 ? fracWidth + 1 : 0); // add dec separator if fracWidth > 0
         }
 
         public int length() {
-            return useNumLen ? Math.max(numLen(), strLen) : strLen;
+            return decimalAlign ? Math.max(numLen(), strWidth) : strWidth;
         }
 
+        // if column name wider than numeric values, add some padding
         public int numLeftPad() {
-                return Math.max(0, strLen - numLen());
+                return Math.max(0, strWidth - numLen());
         }
-    }
-
-    private ColumnInformation getColInfo(String str, boolean useNumLen, char decimalSeparator) {
-        ColumnInformation col = new ColumnInformation();
-        if (str == null) { str = ""; }
-        col.strLen = str.length();
-        if (useNumLen) {
-            col.intLen = str.indexOf(decimalSeparator);
-            if (col.intLen < 0) {
-                col.intLen = col.strLen;
-                col.fracLen = 0;
-            } else {
-                col.fracLen = col.strLen - col.intLen - 1;
-            }
-        } else {
-            for (int pos = str.indexOf('\t'); pos >= 0; pos = str.indexOf('\t',pos+1)) {
-                col.strLen += tabWidth - 1;
-            }
-        }
-        return col;
     }
 
     private static String getAttributeName(DBDAttributeBinding attr) {
@@ -453,31 +482,33 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
     }
 
     private void printRecord() {
-        String[] values = new String[attrs.size()];
+        ColumnInformation[] valInfo = new ColumnInformation[attrs.size()];
         ResultSetRow currentRow = controller.getCurrentRow();
 
         // Calculate column widths
-        int nameWidth = 4, valueWidth = 5;
+        int nameWidth = 4, valueWidth = 5, intWidth = 0;
         for (int i = 0; i < attrs.size(); i++) {
             DBDAttributeBinding attr = attrs.get(i);
             nameWidth = Math.max(nameWidth, getAttributeName(attr).length());
             if (currentRow != null) {
                 String displayString = getCellString(model, attr, currentRow, displayFormat);
-                values[i] = displayString;
-                valueWidth = Math.max(valueWidth, values[i].length());
+                valInfo[i] = new ColumnInformation(displayString,colInfo[i].decimalAlign);
+                valueWidth = Math.max(valueWidth, valInfo[i].length());
+                //if (*****= Math.max(lenInfo.fracWidth, valInfo[i].fracWidth);
             }
         }
 
         // Header
+	/*
         if (delimLeading) grid.append("|");
         grid.append("Name");
-        grid.append(spaces.substring(0,nameWidth-4));
+        grid.append(spaces.substring(0,lenInfo.valueWidth-4));
         grid.append("|Value");
-        grid.append(spaces.substring(0,valueWidth-5));
+        grid.append(spaces.substring(0,lenInfo.length()-5));
         if (delimTrailing) grid.append("|");
         grid.append("\n");
         if (delimLeading) grid.append("|");
-        for (int j = 0; j < nameWidth; j++) grid.append("-");
+        for (int j = 0; j < lenInfo.valueWidth; j++) grid.append("-");
         grid.append("|");
         for (int j = 0; j < valueWidth; j++) grid.append("-");
         if (delimTrailing) grid.append("|");
@@ -486,20 +517,32 @@ public class PlainTextPresentation extends AbstractPresentation implements IAdap
         if (currentRow != null) {
             // Values
             for (int i = 0; i < attrs.size(); i++) {
-                DBDAttributeBinding attr = attrs.get(i);
-                String name = getAttributeName(attr);
                 if (delimLeading) grid.append("|");
+                String name = getAttributeName(attrs.get(i));
                 grid.append(name);
-                grid.append(spaces.substring(0,nameWidth - name.length()));
+                System.out.println(String.format("Printed column name %1$d: %2$s",i,name));
+                grid.append(spaces.substring(0,lenInfo.valueWidth - name.length()));
+                System.out.println("...right padded name");
                 grid.append("|");
-                grid.append(values[i]);
-                grid.append(spaces.substring(0,valueWidth - values[i].length()));
+                int len = 0;
+                if (valInfo[i].decimalAlign) {
+                    len = intWidth - valInfo[i].intWidth;
+                    grid.append(spaces.substring(0, len));
+                    System.out.println("...left padded numeric value");
+                }
+                grid.append(valInfo[i].value);
+                System.out.println("...added value");
+                System.out.println(String.format("...cellWidth = %1$d, thisWidth = %2$d, prevPad = %3$d",valueWidth,valInfo[i].length(),len));
+                grid.append(spaces.substring(0,valueWidth - valInfo[i].length() - len));
+                System.out.println("...right padded value");
                 if (delimTrailing) grid.append("|");
                 grid.append("\n");
+                System.out.println(String.format("Printed column value %1$d: %2$s",i,valInfo[i].value));
             }
         }
         grid.setLength(grid.length() - 1); // cut last line feed
         text.setText(grid.toString());
+        System.out.println("Bottom of printRecord()"); */
     }
 
     @Override
